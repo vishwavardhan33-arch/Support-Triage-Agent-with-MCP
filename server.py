@@ -5,25 +5,95 @@ Exposes support-ticket data (currently a local mock dataset standing in for
 a Zendesk/email inbox) as MCP tools so an MCP-compatible client (e.g. Claude
 Desktop) can list, inspect, and update tickets.
 
-Tools in this file (core plumbing, no AI yet):
+Tools:
     - list_tickets(status=None, category=None)
     - get_ticket(ticket_id)
     - update_ticket_status(ticket_id, status)
-
-classify_ticket() (LLM-based triage) is added in a later step once this
-core is working end-to-end.
+    - classify_ticket(ticket_id)  -- LLM-based triage via a local, open-source
+      model served by Ollama (free, runs on your own machine, no API cost).
 """
 
 import json
+import os
 from pathlib import Path
 from typing import Optional
 
+import requests
 from mcp.server.mcpserver import MCPServer
+
+from retrieval import find_similar_tickets
 
 DATA_PATH = Path(__file__).parent / "data" / "tickets.json"
 VALID_STATUSES = {"open", "in_progress", "closed"}
+CATEGORIES = [
+    "Loan Status Query", "Document Upload Issue", "Disbursement Delay",
+    "Interest Rate Query", "Account Access", "Partner Onboarding",
+    "KYC Issue", "Payment Reconciliation", "Technical / Portal Bug",
+    "Complaint - Escalation",
+]
+
+# Ollama serves open-source models locally and for free.
+# Install: https://ollama.com | Pull a model once: `ollama pull llama3.2`
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/generate")
+OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
+
+CLASSIFY_SYSTEM_PROMPT = f"""You are a support-ticket triage assistant for a home loan \
+partner-support team. Given a new ticket and some similar past tickets (for reference \
+only), classify the new ticket and draft a short first response.
+
+Respond with ONLY a JSON object, no other text, no markdown fences, in this exact shape:
+{{
+  "category": "<one of: {', '.join(CATEGORIES)}>",
+  "priority": "<low|medium|high>",
+  "sentiment": "<neutral|frustrated|angry|satisfied>",
+  "suggested_response": "<a short, professional 2-3 sentence first response to the sender>"
+}}"""
 
 mcp = MCPServer("Support Triage")
+
+
+def _call_ollama(system: str, user_prompt: str, model: Optional[str] = None) -> str:
+    """
+    Sends a prompt to a locally-running Ollama instance and returns the raw
+    text response. Requires `ollama serve` running and the model pulled
+    (`ollama pull <model>`) — see README for setup.
+    """
+    model = model or OLLAMA_MODEL
+    try:
+        response = requests.post(
+            OLLAMA_URL,
+            json={
+                "model": model,
+                "system": system,
+                "prompt": user_prompt,
+                "stream": False,
+                "format": "json",  # asks Ollama to constrain output to valid JSON
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+    except requests.exceptions.ConnectionError as e:
+        raise RuntimeError(
+            f"Could not connect to Ollama at {OLLAMA_URL}. "
+            f"Make sure it's installed and running (`ollama serve`), and that you've "
+            f"pulled the model with `ollama pull {model}`."
+        ) from e
+
+    return response.json()["response"]
+
+
+def _build_classify_prompt(ticket: dict, similar: list[dict]) -> str:
+    lines = [
+        "NEW TICKET:",
+        f"Subject: {ticket['subject']}",
+        f"Body: {ticket['body']}",
+        f"Sender type: {ticket['sender_type']}",
+    ]
+    if similar:
+        lines.append("\nSIMILAR PAST TICKETS (reference only, do not copy verbatim):")
+        for t in similar:
+            lines.append(f"- Subject: {t['subject']} | Category: {t['category']} | Priority: {t['priority']}")
+    return "\n".join(lines)
 
 
 def _load_tickets() -> list[dict]:
@@ -90,6 +160,42 @@ def update_ticket_status(ticket_id: str, status: str) -> dict:
             return t
 
     return {"error": f"Ticket '{ticket_id}' not found"}
+
+
+@mcp.tool()
+def classify_ticket(ticket_id: str) -> dict:
+    """
+    Classify a ticket using a local open-source LLM (via Ollama): predicts
+    category, priority, and sentiment, and drafts a suggested first
+    response. Retrieves similar past (non-open) tickets as reference
+    context before classifying (RAG-style retrieval, see retrieval.py).
+    """
+    tickets = _load_tickets()
+    ticket = next((t for t in tickets if t["id"] == ticket_id), None)
+    if ticket is None:
+        return {"error": f"Ticket '{ticket_id}' not found"}
+
+    similar = find_similar_tickets(ticket, tickets, top_k=3)
+    user_prompt = _build_classify_prompt(ticket, similar)
+
+    try:
+        raw_text = _call_ollama(CLASSIFY_SYSTEM_PROMPT, user_prompt)
+    except RuntimeError as e:
+        return {"error": str(e)}
+
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        cleaned = cleaned[4:] if cleaned.lower().startswith("json") else cleaned
+
+    try:
+        result = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return {"error": "Could not parse model output as JSON", "raw_output": raw_text}
+
+    result["ticket_id"] = ticket_id
+    result["similar_ticket_ids"] = [t["id"] for t in similar]
+    return result
 
 
 if __name__ == "__main__":
