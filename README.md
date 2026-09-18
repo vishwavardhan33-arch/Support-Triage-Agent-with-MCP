@@ -82,6 +82,9 @@ different (ideally larger) model gives a more honest signal.
 
 ```
 support-triage-mcp/
+├── .github/
+│   └── workflows/
+│       └── ci.yml         # GitHub Actions: lint + pytest on every push/PR
 ├── server.py              # MCP server + tool definitions
 ├── evaluate.py            # routing-accuracy + LLM-as-judge evaluation harness
 ├── retrieval.py           # TF-IDF similar-ticket retrieval (RAG-style)
@@ -114,8 +117,14 @@ python data/generate_data.py
 Run the test suite:
 
 ```bash
-pip install pytest
+pip install -r requirements-dev.txt
 pytest tests/ -v
+```
+
+Lint (same check CI runs):
+
+```bash
+ruff check .
 ```
 
 ## Running the server standalone
@@ -160,10 +169,18 @@ Restart Claude Desktop, then try prompts like:
 
 ## Roadmap
 
-- [ ] GitHub Actions CI (lint + pytest on every push — no Ollama needed since tests mock the LLM call)
 - [ ] Swap TF-IDF retrieval for real embeddings (a local embedding model, e.g. via `ollama pull nomic-embed-text`)
 - [ ] Swap the mock dataset for a real ticket source
 - [ ] Try larger local models (`llama3.1`, `mistral`) and compare routing accuracy vs. `llama3.2`
+
+## Continuous Integration
+
+Every push and PR to `main` runs `.github/workflows/ci.yml`, which lints
+with [ruff](https://docs.astral.sh/ruff/) and runs the full pytest suite on
+Python 3.11 and 3.12. No Ollama install is needed in CI — `classify_ticket`'s
+LLM call is mocked in `tests/test_classify.py`, so the suite runs fully
+offline. You'll see a status badge/checkmark on each commit and PR once this
+is pushed.
 
 ## Notes on the MCP SDK version
 
