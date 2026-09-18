@@ -78,6 +78,26 @@ it's a run artifact, not source).
 it tends to rate its own drafts generously. Passing `--judge-model` with a
 different (ideally larger) model gives a more honest signal.
 
+## Web UI
+
+On top of the MCP server, `app.py` wraps the same tool functions as a small
+FastAPI REST API and serves a browser-based dashboard from `static/` — so
+the project looks and works like a real internal support tool, not just a
+script.
+
+```bash
+python app.py
+```
+
+Then open **http://localhost:8000**. Filter tickets by status/category in
+the left rail, click a case to open its detail panel, update its status, or
+click **Run AI triage** to call `classify_ticket` (via Ollama) and see the
+predicted category, priority, sentiment, and a copyable drafted response.
+The dot next to the header shows whether Ollama is currently reachable.
+
+This is a separate, optional layer — the MCP server and its tools work
+identically with or without the web UI running.
+
 ## Project structure
 
 ```
@@ -85,6 +105,8 @@ support-triage-mcp/
 ├── .github/
 │   └── workflows/
 │       └── ci.yml         # GitHub Actions: lint + pytest on every push/PR
+├── app.py                 # FastAPI backend for the web UI (wraps the same tool functions)
+├── static/                # Web UI frontend (HTML/CSS/JS, served by app.py)
 ├── server.py              # MCP server + tool definitions
 ├── evaluate.py            # routing-accuracy + LLM-as-judge evaluation harness
 ├── retrieval.py           # TF-IDF similar-ticket retrieval (RAG-style)

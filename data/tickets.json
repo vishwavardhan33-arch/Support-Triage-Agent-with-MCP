@@ -9,7 +9,7 @@
     "timestamp": "2026-09-15T18:00:00",
     "category": "Loan Status Query",
     "priority": "low",
-    "status": "open"
+    "status": "closed"
   },
   {
     "id": "T-1039",
